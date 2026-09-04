@@ -17,8 +17,6 @@ import ScorePill from "../components/ScorePill";
 
 import useSpeechRecognition from "../hooks/useSpeechRecognition";
 
-import Talkify from "talkify-tts";
-
 export default function InterviewSession() {
   const { sessionId } = useParams();
   const location = useLocation();
@@ -67,13 +65,13 @@ export default function InterviewSession() {
   } = useSpeechRecognition();
 
   // ============================================================
-  // TALKIFY TTS
+  // BROWSER TTS
   // ============================================================
 
-  const playerRef = useRef(null);
+  const speechRef = useRef(null);
 
   /*
-   * Used to invalidate old playback.
+   * Used to invalidate old speech requests.
    *
    * Question 1 starts speaking.
    * Question 2 arrives.
@@ -92,108 +90,25 @@ export default function InterviewSession() {
   const [ttsRate, setTtsRate] = useState(1);
 
   // ============================================================
-  // INITIALIZE TALKIFY
+  // BROWSER TTS SUPPORT
   // ============================================================
 
-  useEffect(() => {
-    try {
-      /*
-       * IMPORTANT:
-       *
-       * talkify-tts exposes Html5Player as a named export.
-       */
-      const player = new Html5Player();
-
-      playerRef.current = player;
-
-      /*
-       * Default voice settings.
-       */
-      player.setRate(1);
-      player.setVolume(1);
-      player.usePitch(1);
-
-      console.log(
-        "Talkify Html5Player initialized"
-      );
-    } catch (err) {
-      console.error(
-        "Talkify initialization error:",
-        err
-      );
-
-      setError(
-        "Unable to initialize interviewer voice."
-      );
-    }
-
-    return () => {
-      speechRequestRef.current += 1;
-
-      try {
-        playerRef.current?.pause();
-      } catch (err) {
-        console.warn(
-          "Talkify cleanup warning:",
-          err
-        );
-      }
-
-      /*
-       * Cancel browser speech as an additional
-       * cleanup safeguard.
-       */
-      if (
-        typeof window !== "undefined" &&
-        window.speechSynthesis
-      ) {
-        try {
-          window.speechSynthesis.cancel();
-        } catch (err) {
-          console.warn(
-            "Speech synthesis cleanup warning:",
-            err
-          );
-        }
-      }
-
-      playerRef.current = null;
-    };
-  }, []);
+  const ttsSupported =
+    typeof window !== "undefined" &&
+    "speechSynthesis" in window &&
+    "SpeechSynthesisUtterance" in window;
 
   // ============================================================
-  // STOP TALKIFY
+  // STOP TTS
   // ============================================================
 
   const stopTTS = () => {
     /*
-     * Invalidate previous playback.
+     * Invalidate any previous speech request.
      */
     speechRequestRef.current += 1;
 
-    const player = playerRef.current;
-
-    if (player) {
-      try {
-        player.pause();
-      } catch (err) {
-        console.warn(
-          "Talkify pause error:",
-          err
-        );
-      }
-    }
-
-    /*
-     * Talkify Html5Player uses browser speech.
-     *
-     * Cancel any current browser utterance so an old
-     * question cannot continue.
-     */
-    if (
-      typeof window !== "undefined" &&
-      window.speechSynthesis
-    ) {
+    if (ttsSupported) {
       try {
         window.speechSynthesis.cancel();
       } catch (err) {
@@ -203,6 +118,8 @@ export default function InterviewSession() {
         );
       }
     }
+
+    speechRef.current = null;
 
     setTtsSpeaking(false);
     setTtsPaused(false);
@@ -226,49 +143,80 @@ export default function InterviewSession() {
       return;
     }
 
-    const player = playerRef.current;
-
-    if (!player) {
+    if (!ttsSupported) {
       setError(
-        "Interviewer voice is not initialized yet."
+        "Browser text-to-speech is not supported."
       );
       return;
     }
 
     /*
-     * Stop old speech first.
+     * Stop any previous speech first.
      */
-    stopTTS();
+    try {
+      window.speechSynthesis.cancel();
+    } catch (err) {
+      console.warn(
+        "Speech cancellation warning:",
+        err
+      );
+    }
 
     /*
-     * New playback request.
+     * Create a new speech request.
      */
     const requestId =
       ++speechRequestRef.current;
 
-    setError("");
-    setTtsSpeaking(false);
-    setTtsPaused(false);
-
-    try {
-      console.log(
-        "TALKIFY PLAY:",
+    const utterance =
+      new SpeechSynthesisUtterance(
         cleanText
       );
 
-      /*
-       * Apply current rate.
-       */
-      player.setRate(ttsRate);
+    /*
+     * Speech settings.
+     */
+    utterance.rate = ttsRate;
+    utterance.pitch = 1;
+    utterance.volume = 1;
 
-      /*
-       * Talkify Html5Player.
-       */
-      player.playText(cleanText);
+    /*
+     * Optional:
+     * Try to select a natural English voice.
+     */
+    const voices =
+      window.speechSynthesis.getVoices();
 
-      /*
-       * Make sure this request is still current.
-       */
+    const preferredVoice =
+      voices.find(
+        (voice) =>
+          voice.lang
+            ?.toLowerCase()
+            .startsWith("en-us")
+      ) ||
+      voices.find(
+        (voice) =>
+          voice.lang
+            ?.toLowerCase()
+            .startsWith("en-gb")
+      ) ||
+      voices.find(
+        (voice) =>
+          voice.lang
+            ?.toLowerCase()
+            .startsWith("en")
+      );
+
+    if (preferredVoice) {
+      utterance.voice =
+        preferredVoice;
+    }
+
+    // ==========================================================
+    // SPEECH START
+    // ==========================================================
+
+    utterance.onstart = () => {
       if (
         speechRequestRef.current !==
         requestId
@@ -278,10 +226,45 @@ export default function InterviewSession() {
 
       setTtsSpeaking(true);
       setTtsPaused(false);
-    } catch (err) {
+      setError("");
+    };
+
+    // ==========================================================
+    // SPEECH END
+    // ==========================================================
+
+    utterance.onend = () => {
+      if (
+        speechRequestRef.current !==
+        requestId
+      ) {
+        return;
+      }
+
+      setTtsSpeaking(false);
+      setTtsPaused(false);
+      speechRef.current = null;
+    };
+
+    // ==========================================================
+    // SPEECH ERROR
+    // ==========================================================
+
+    utterance.onerror = (event) => {
+      /*
+       * "canceled" is normal when we intentionally
+       * stop old speech.
+       */
+      if (
+        event.error === "canceled" ||
+        event.error === "interrupted"
+      ) {
+        return;
+      }
+
       console.error(
-        "Talkify TTS error:",
-        err
+        "Browser TTS error:",
+        event
       );
 
       if (
@@ -293,6 +276,34 @@ export default function InterviewSession() {
 
       setTtsSpeaking(false);
       setTtsPaused(false);
+      speechRef.current = null;
+
+      setError(
+        "Unable to play interviewer voice."
+      );
+    };
+
+    /*
+     * Store current utterance.
+     */
+    speechRef.current = utterance;
+
+    /*
+     * Start browser TTS.
+     */
+    try {
+      window.speechSynthesis.speak(
+        utterance
+      );
+    } catch (err) {
+      console.error(
+        "Speech synthesis error:",
+        err
+      );
+
+      setTtsSpeaking(false);
+      setTtsPaused(false);
+      speechRef.current = null;
 
       setError(
         err?.message ||
@@ -302,50 +313,54 @@ export default function InterviewSession() {
   };
 
   // ============================================================
-  // PAUSE TALKIFY
+  // PAUSE TTS
   // ============================================================
 
   const pauseTTS = () => {
-    const player = playerRef.current;
-
-    if (!player) {
+    if (!ttsSupported) {
       return;
     }
 
-    try {
-      player.pause();
+    if (
+      window.speechSynthesis.speaking
+    ) {
+      try {
+        window.speechSynthesis.pause();
 
-      setTtsPaused(true);
-      setTtsSpeaking(true);
-    } catch (err) {
-      console.error(
-        "Talkify pause error:",
-        err
-      );
+        setTtsPaused(true);
+        setTtsSpeaking(true);
+      } catch (err) {
+        console.error(
+          "Speech pause error:",
+          err
+        );
+      }
     }
   };
 
   // ============================================================
-  // RESUME TALKIFY
+  // RESUME TTS
   // ============================================================
 
   const resumeTTS = () => {
-    const player = playerRef.current;
-
-    if (!player) {
+    if (!ttsSupported) {
       return;
     }
 
-    try {
-      player.play();
+    if (
+      window.speechSynthesis.paused
+    ) {
+      try {
+        window.speechSynthesis.resume();
 
-      setTtsPaused(false);
-      setTtsSpeaking(true);
-    } catch (err) {
-      console.error(
-        "Talkify resume error:",
-        err
-      );
+        setTtsPaused(false);
+        setTtsSpeaking(true);
+      } catch (err) {
+        console.error(
+          "Speech resume error:",
+          err
+        );
+      }
     }
   };
 
@@ -359,7 +374,7 @@ export default function InterviewSession() {
     }
 
     /*
-     * Speaking → pause.
+     * Currently speaking → pause.
      */
     if (
       ttsSpeaking &&
@@ -370,7 +385,7 @@ export default function InterviewSession() {
     }
 
     /*
-     * Paused → resume.
+     * Currently paused → resume.
      */
     if (ttsPaused) {
       resumeTTS();
@@ -390,21 +405,68 @@ export default function InterviewSession() {
   const handleRateChange = (rate) => {
     setTtsRate(rate);
 
-    const player = playerRef.current;
+    /*
+     * If speech is currently playing,
+     * restart it with the new rate.
+     */
+    if (
+      ttsSpeaking &&
+      question &&
+      !listening
+    ) {
+      /*
+       * Cancel current speech.
+       */
+      if (ttsSupported) {
+        window.speechSynthesis.cancel();
+      }
 
-    if (!player) {
-      return;
-    }
+      setTtsSpeaking(false);
+      setTtsPaused(false);
 
-    try {
-      player.setRate(rate);
-    } catch (err) {
-      console.error(
-        "Talkify rate error:",
-        err
-      );
+      /*
+       * Restart with new speed.
+       */
+      setTimeout(() => {
+        if (!listening) {
+          speakQuestion(question);
+        }
+      }, 50);
     }
   };
+
+  // ============================================================
+  // LOAD BROWSER VOICES
+  // ============================================================
+
+  useEffect(() => {
+    if (!ttsSupported) {
+      return undefined;
+    }
+
+    /*
+     * Some browsers load voices asynchronously.
+     */
+    const loadVoices = () => {
+      const voices =
+        window.speechSynthesis.getVoices();
+
+      console.log(
+        "Browser TTS voices:",
+        voices.length
+      );
+    };
+
+    loadVoices();
+
+    window.speechSynthesis.onvoiceschanged =
+      loadVoices;
+
+    return () => {
+      window.speechSynthesis.onvoiceschanged =
+        null;
+    };
+  }, [ttsSupported]);
 
   // ============================================================
   // QUESTION CHANGE
@@ -427,6 +489,9 @@ export default function InterviewSession() {
      */
     stopTTS();
 
+    /*
+     * Reset speech recognition.
+     */
     reset();
 
     /*
@@ -443,9 +508,10 @@ export default function InterviewSession() {
     if (
       !autoRead ||
       !question ||
-      listening
+      listening ||
+      !ttsSupported
     ) {
-      return;
+      return undefined;
     }
 
     /*
@@ -455,26 +521,20 @@ export default function InterviewSession() {
       autoReadQuestionRef.current ===
       question
     ) {
-      return;
+      return undefined;
     }
 
     autoReadQuestionRef.current =
       question;
 
-    console.log(
-      "TALKIFY AUTO PLAY:",
-      question
-    );
-
     /*
-     * Small delay so the question state/render
-     * settles before speech starts.
+     * Small delay so the question/render settles.
      */
     const timer = window.setTimeout(() => {
       if (!listening) {
         speakQuestion(question);
       }
-    }, 150);
+    }, 250);
 
     return () => {
       window.clearTimeout(timer);
@@ -483,6 +543,7 @@ export default function InterviewSession() {
     question,
     autoRead,
     listening,
+    ttsSupported,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ============================================================
@@ -588,7 +649,7 @@ export default function InterviewSession() {
     }
 
     /*
-     * VERY IMPORTANT:
+     * IMPORTANT:
      *
      * Stop interviewer TTS before microphone starts.
      *
@@ -759,15 +820,6 @@ export default function InterviewSession() {
     return () => {
       speechRequestRef.current += 1;
 
-      try {
-        playerRef.current?.pause();
-      } catch (err) {
-        console.warn(
-          "Talkify unmount cleanup:",
-          err
-        );
-      }
-
       if (
         typeof window !== "undefined" &&
         window.speechSynthesis
@@ -781,6 +833,8 @@ export default function InterviewSession() {
           );
         }
       }
+
+      speechRef.current = null;
     };
   }, []);
 
@@ -896,7 +950,7 @@ export default function InterviewSession() {
             </p>
 
             {/* =================================================
-                TALKIFY CONTROLS
+                BROWSER TTS CONTROLS
             ================================================== */}
 
             <div className="voice-controls">
@@ -909,7 +963,8 @@ export default function InterviewSession() {
                 }
                 disabled={
                   !question ||
-                  listening
+                  listening ||
+                  !ttsSupported
                 }
               >
                 {ttsSpeaking
@@ -942,7 +997,8 @@ export default function InterviewSession() {
                   )
                 }
                 disabled={
-                  listening
+                  listening ||
+                  !ttsSupported
                 }
               >
                 <option value="0.8">
@@ -971,6 +1027,7 @@ export default function InterviewSession() {
                       e.target.checked
                     )
                   }
+                  disabled={!ttsSupported}
                 />
 
                 Read questions
@@ -978,6 +1035,18 @@ export default function InterviewSession() {
               </label>
 
             </div>
+
+            {!ttsSupported && (
+              <p
+                className="error"
+                style={{
+                  marginTop: 12,
+                }}
+              >
+                Your browser does not support
+                text-to-speech.
+              </p>
+            )}
 
           </section>
 
@@ -1187,7 +1256,7 @@ export default function InterviewSession() {
               </span>
 
               <b>
-                Talkify
+                Browser TTS
               </b>
             </div>
 
