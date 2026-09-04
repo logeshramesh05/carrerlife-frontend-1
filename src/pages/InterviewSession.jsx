@@ -17,7 +17,7 @@ import ScorePill from "../components/ScorePill";
 
 import useSpeechRecognition from "../hooks/useSpeechRecognition";
 
-import { Html5Player } from "talkify-tts";
+import Talkify from "talkify-tts";
 
 export default function InterviewSession() {
   const { sessionId } = useParams();
